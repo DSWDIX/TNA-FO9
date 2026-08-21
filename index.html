@@ -126,6 +126,18 @@
   @media(max-width:520px){.bar .inner{padding:9px 12px}.count{font-size:12px}button{padding:9px 12px;font-size:13.5px}}
 
   .done{background:var(--ink);color:#fff;border-radius:var(--r);padding:26px 22px;display:none}
+.done .acts{display:flex;gap:9px;flex-wrap:wrap;margin-top:16px}
+.done .acts button{background:#fff;color:var(--ink);border:none;font-weight:600;border-radius:7px;padding:11px 16px;font-size:14.5px;cursor:pointer}
+.done .acts button:hover{background:#E8EDF2}
+.done textarea{width:100%;min-height:130px;margin-top:14px;font-family:ui-monospace,Menlo,monospace;font-size:12px;
+ border-radius:7px;border:1px solid #46566B;background:#0B1523;color:#D7E0EA;padding:10px}
+#iab{display:none;background:#FDF3E3;border:1px solid #E0C089;border-left:5px solid var(--warn);
+ border-radius:0 10px 10px 0;padding:18px 20px;margin-bottom:18px}
+#iab h3{font-family:Sora,sans-serif;margin:0 0 8px;font-size:17px;color:#7A430E}
+#iab p{margin:0 0 10px;font-size:15px;color:#5C4A33;line-height:1.5}
+#iab ol{margin:0 0 12px;padding-left:20px;font-size:15px;color:#5C4A33}
+#iab li{margin-bottom:5px}
+#iab button{background:var(--warn);color:#fff;border:none;border-radius:7px;padding:11px 16px;font:inherit;font-size:14.5px;font-weight:600;cursor:pointer}
   .done h2{color:#fff}
   .done p{color:#C3CEDB;font-size:15px}
   footer.credit{text-align:center;color:var(--ink-3);font-size:12.5px;padding:8px 0 20px}
@@ -144,6 +156,17 @@
 </header>
 
 <div class="wrap">
+
+<div id="iab">
+  <h3>Please open this in Chrome or Safari first</h3>
+  <p>You have opened this from inside Messenger, Facebook or a similar app. Its built-in browser cannot save files properly, so your answers may be lost at the end.</p>
+  <ol>
+    <li>Tap the <b>&#8943;</b> or <b>&#8942;</b> menu at the top corner of this screen</li>
+    <li>Choose <b>Open in browser</b>, <b>Open in Chrome</b> or <b>Open in Safari</b></li>
+    <li>Answer the questionnaire there</li>
+  </ol>
+  <button type="button" id="copyLink">Copy the link instead</button>
+</div>
 
 <section>
   <p class="sec-no">Before you begin</p>
@@ -375,7 +398,9 @@
 
 <section class="done" id="done">
   <h2>Thank you</h2>
-  <p id="doneMsg">Your answers have been downloaded to your device. Please send the file to your Provincial Link. Your responses will directly shape the design of this program.</p>
+  <p id="doneMsg"></p>
+  <div class="acts" id="doneActs"></div>
+  <textarea id="doneRaw" style="display:none" readonly></textarea>
 </section>
 
 <footer class="credit">Bridging Leadership Capacity Development Programme · Prepared for DSWD Field Office IX</footer>
@@ -621,7 +646,7 @@ function collect(){
     else o[k] = [o[k], v];
   }
   o._submitted = new Date().toISOString();
-  o._instrument = 'TNA-DSWD-FO9-BL-v5';
+  o._instrument = 'TNA-DSWD-FO9-BL-v7';
   return o;
 }
 function toCSV(o){
@@ -659,23 +684,100 @@ async function send(payload){
   } catch(e) { return false; }
 }
 
+/* Messenger, Facebook, Instagram and similar in-app browsers cannot reliably
+   trigger a file download: they navigate to the blob and display it as text.
+   Detect them, warn before the respondent invests 30 minutes, and give a
+   copy-paste fallback at the end instead of a download that will not work. */
+const IN_APP = /FBAN|FBAV|FB_IAB|FBIOS|Messenger|Instagram|Line\/|Viber|WhatsApp|MicroMessenger|Twitter|TikTok|GSA\//i
+  .test(navigator.userAgent || '');
+if (IN_APP) document.getElementById('iab').style.display = 'block';
+
+document.getElementById('copyLink').addEventListener('click', async (ev) => {
+  try { await navigator.clipboard.writeText(location.href); ev.target.textContent = 'Link copied'; }
+  catch (e) { ev.target.textContent = location.href; }
+});
+
+/* One id per page load. If the respondent taps Finish more than once, every
+   attempt carries the same id and the collector stores only the first. */
+const SID = (function(){
+  try { if (crypto && crypto.randomUUID) return crypto.randomUUID(); } catch(e){}
+  return 'sid-' + Date.now() + '-' + Math.random().toString(36).slice(2,10);
+})();
+let submitting = false, submitted = false;
+
+function addAct(label, fn){
+  const b = document.createElement('button');
+  b.type = 'button'; b.textContent = label;
+  b.addEventListener('click', () => fn(b));
+  document.getElementById('doneActs').appendChild(b);
+}
+
 document.getElementById('finish').addEventListener('click', async () => {
+  const btn = document.getElementById('finish');
+  if (submitting) return;                       // ignore taps while in flight
+  if (submitted) {                              // already done — just re-show the panel
+    const d0 = document.getElementById('done');
+    d0.style.display = 'block';
+    d0.scrollIntoView({behavior:'smooth', block:'center'});
+    return;
+  }
+  submitting = true;
+  btn.disabled = true;
+  btn.textContent = 'Submitting\u2026';
+
   const o = collect();
+  o._sid = SID;
   const who = (o.p_name || o.p_lgu || 'respondent').toString().replace(/[^\w\-]+/g,'_').slice(0,40);
   const stamp = new Date().toISOString().slice(0,10);
-  download(`TNA_${who}_${stamp}.csv`, toCSV(o), 'text/csv;charset=utf-8');
-  download(`TNA_${who}_${stamp}.json`, JSON.stringify(o,null,2), 'application/json');
+  const base = `TNA_${who}_${stamp}`;
+  const csv = toCSV(o), json = JSON.stringify(o, null, 2);
 
-  const msg = document.getElementById('doneMsg');
-  if (ENDPOINT) {
-    const sent = await send(o);
-    msg.textContent = sent
-      ? 'Your answers have been submitted, and a copy has been saved to your device as a backup. '
-        + 'You do not need to send that file to anyone unless your Provincial Link asks for it. '
-        + 'Your responses will directly shape the design of this program.'
-      : 'Your answers were saved to your device, but we could not reach the server \u2014 this usually '
-        + 'means the connection dropped. Please send the downloaded file to your Provincial Link.';
+  const sent = ENDPOINT ? await send(o) : false;
+
+  const msg  = document.getElementById('doneMsg');
+  const acts = document.getElementById('doneActs');
+  const raw  = document.getElementById('doneRaw');
+  acts.innerHTML = ''; raw.style.display = 'none';
+
+  if (sent) {
+    msg.textContent = 'Your answers have been submitted. Salamat po \u2014 your responses will directly '
+      + 'shape the design of this program. You do not need to send anything to anyone.';
+    if (!IN_APP) {
+      addAct('Save a copy to my device', (b) => {
+        download(base + '.csv', csv, 'text/csv;charset=utf-8');
+        download(base + '.json', json, 'application/json');
+        b.textContent = 'Copy saved';
+      });
+    }
+  } else if (IN_APP) {
+    msg.textContent = 'Your answers could not be sent, and this in-app browser cannot save files. '
+      + 'Please tap Copy my answers below and paste them into a message to your Provincial Link \u2014 '
+      + 'do not close this page until you have done so.';
+    raw.value = json; raw.style.display = 'block';
+    addAct('Copy my answers', async (b) => {
+      try { await navigator.clipboard.writeText(json); b.textContent = 'Copied \u2014 now paste and send'; }
+      catch (e) { raw.select(); b.textContent = 'Selected \u2014 copy manually'; }
+    });
+  } else {
+    download(base + '.csv', csv, 'text/csv;charset=utf-8');
+    download(base + '.json', json, 'application/json');
+    msg.textContent = 'Your answers were saved to your device, but we could not reach the server. '
+      + 'Please send the downloaded file to your Provincial Link.';
+    addAct('Download again', () => {
+      download(base + '.csv', csv, 'text/csv;charset=utf-8');
+      download(base + '.json', json, 'application/json');
+    });
   }
+
+  submitting = false;
+  if (sent) {
+    submitted = true;
+    btn.textContent = 'Submitted';
+  } else {
+    btn.disabled = false;                        // allow a retry when sending failed
+    btn.textContent = 'Try sending again';
+  }
+
   const d = document.getElementById('done');
   d.style.display = 'block';
   d.scrollIntoView({behavior:'smooth', block:'center'});
